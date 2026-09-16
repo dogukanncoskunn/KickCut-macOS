@@ -663,10 +663,14 @@ mod tests {
         .expect("install should succeed");
 
         // Progress has to reach the UI in order, or the installer looks stuck.
-        assert_eq!(
-            *seen.lock().unwrap(),
-            vec!["downloading", "verifying", "extracting"]
-        );
+        // One cycle per archive: a platform that pins two of them runs the three
+        // stages twice, and the UI is told so rather than being shown a bar that
+        // finishes and then starts again with no explanation.
+        let expected: Vec<&str> = PINS
+            .iter()
+            .flat_map(|_| ["downloading", "verifying", "extracting"])
+            .collect();
+        assert_eq!(*seen.lock().unwrap(), expected);
 
         for name in [format!("ffmpeg{EXE}"), format!("ffprobe{EXE}")] {
             let bin = dir.join(&name);

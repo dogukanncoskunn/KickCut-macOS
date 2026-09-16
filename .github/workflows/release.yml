@@ -64,6 +64,40 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "$(basename "$dmg")  $sha"
 
+      # latest.json is what an installed copy reads to learn a newer one exists.
+      # It carries the signature rather than the bundle, so the check is a few
+      # hundred bytes and only a real update costs a download.
+      #
+      # Written on every run rather than only on a tag, because a manifest that
+      # is first attempted during a release is a manifest whose first failure
+      # happens with a half-made release already published. On a manual run the
+      # tag is the branch name and the contents are nonsense; what is being
+      # checked there is that it is produced at all.
+      - name: Write the updater manifest
+        id: updater
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          bundle=src-tauri/target/release/bundle
+          tarball=$(find "$bundle/macos" -maxdepth 1 -name "*.app.tar.gz" | head -1)
+          if [ -z "$tarball" ]; then echo "No updater bundle was produced."; exit 1; fi
+          if [ ! -f "$tarball.sig" ]; then echo "No .sig - is the signing key set?"; exit 1; fi
+
+          url="https://github.com/$REPO/releases/download/$TAG/$(basename "$tarball")"
+          jq -n \
+            --arg version "${TAG#v}" \
+            --arg tag "$TAG" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$(cat "$tarball.sig")" \
+            --arg url "$url" \
+            '{version: $version, notes: ("See the release notes for " + $tag + "."),
+              pub_date: $date,
+              platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > latest.json
+
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          cat latest.json
+
       # Nobody working on this has a Mac, so a manual run is the only chance to
       # look at the thing rather than infer it from a green tick. The runner is
       # a real machine with a login session, and Screen Recording is already
@@ -98,6 +132,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           DMG: ${{ steps.built.outputs.dmg }}
+          TARBALL: ${{ steps.updater.outputs.tarball }}
           NAME: ${{ steps.built.outputs.name }}
           SHA: ${{ steps.built.outputs.sha256 }}
         run: |
@@ -112,29 +147,7 @@ jobs:
           # the bundle in place instead of mounting a disk image. Both are
           # published, because they answer different questions - one is how you
           # install it, the other is how an installed copy updates itself.
-          bundle=src-tauri/target/release/bundle
-          tarball=$(find "$bundle/macos" -maxdepth 1 -name "*.app.tar.gz" | head -1)
-          if [ -z "$tarball" ]; then echo "No updater bundle was produced."; exit 1; fi
-          if [ ! -f "$tarball.sig" ]; then echo "No .sig - is the signing key set?"; exit 1; fi
-          gh release upload "$TAG" "$tarball" "$tarball.sig" --clobber
-
-          # latest.json is what an installed copy reads to learn a newer one
-          # exists. It carries the signature rather than the bundle, so the
-          # check is a few hundred bytes and only a real update costs a
-          # download. Published to this release and read through the
-          # /releases/latest/download/ path, so cutting a tag is still the
-          # whole procedure.
-          url="https://github.com/$REPO/releases/download/$TAG/$(basename "$tarball")"
-          jq -n \
-            --arg version "${TAG#v}" \
-            --arg tag "$TAG" \
-            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg sig "$(cat "$tarball.sig")" \
-            --arg url "$url" \
-            '{version: $version, notes: ("See the release notes for " + $tag + "."),
-              pub_date: $date,
-              platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > latest.json
-          gh release upload "$TAG" latest.json --clobber
+          gh release upload "$TAG" "$TARBALL" "$TARBALL.sig" latest.json --clobber
 
           # Appended to whatever notes were generated, rather than replacing
           # them, so the changelog survives. The prose lives in its own file so

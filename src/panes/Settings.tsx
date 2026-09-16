@@ -77,8 +77,11 @@ function FfmpegSetting() {
   const { status, progress, error, install } = useFfmpeg();
 
   if (progress) {
-    // `total` is 0 until the first response header arrives, and for the
-    // verifying and unpacking stages, which have no meaningful percentage.
+    // `total` is 0 only until the first progress event arrives. After that it
+    // is the whole install rather than the archive in hand, and it keeps its
+    // value through verifying and unpacking - on a platform that fetches two
+    // archives the bar would otherwise go indeterminate and back twice, which
+    // reads as the install restarting.
     const fraction = progress.total > 0 ? progress.received / progress.total : null;
     return (
       <div className="flex flex-col gap-2.5">
