@@ -108,7 +108,7 @@ only hosts the app contacts:
 | `images.kick.com` | broadcast thumbnails |
 | `stream.kick.com` | the playlists and the video segments |
 | `ffmpeg.martin-riedl.de` | the one-time FFmpeg download |
-| `github.com` | one small check per launch for a newer version, and the update itself if you accept it |
+| `github.com`, `release-assets.githubusercontent.com` | one small check per launch for a newer version, and the update itself if you accept it — GitHub serves release files from the second |
 
 That list is not a promise written from memory. Every release is re-run on a
 real Mac: a test drives the app through a download, records every connection

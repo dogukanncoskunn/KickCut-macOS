@@ -44,6 +44,8 @@ const read = (f) => readFileSync(f, "utf8").split("\n");
 
 const pending = new Map(); // "id port" -> queried name
 const nameOf = new Map(); // address -> queried name
+const aliasOf = new Map(); // CNAME target -> the name it stands in for
+const rootOf = (name) => (aliasOf.has(name) ? rootOf(aliasOf.get(name)) : name);
 for (const line of read(dnsFile)) {
   const q = line.match(/\.(\d+) > \S+\.53: (\d+)\+? .*?\b(?:A|AAAA|HTTPS|Type65)\? (\S+?)\.? \(/);
   if (q) {
@@ -51,8 +53,15 @@ for (const line of read(dnsFile)) {
     continue;
   }
   const r = line.match(/\.53 > \S+\.(\d+): (\d+)\S* (?:\S+ )*?\d+\/\d+\/\d+ (.*)$/);
-  const name = r && pending.get(`${r[2]} ${r[1]}`);
-  if (!name) continue;
+  const asked = r && pending.get(`${r[2]} ${r[1]}`);
+  if (!asked) continue;
+  // images.kick.com is a CNAME for a CloudFront name, and macOS also looks that
+  // target up on its own. Follow aliases back to the name the app asked for, or
+  // the second lookup would relabel the same addresses as a stranger.
+  const name = rootOf(asked);
+  for (const m of r[3].matchAll(/\bCNAME (\S+?)\.?(?=,|\s|$)/g)) {
+    if (m[1].toLowerCase() !== name) aliasOf.set(m[1].toLowerCase(), name);
+  }
   for (const m of r[3].matchAll(/\b(?:A|AAAA) ([0-9a-f:.]+)/g)) nameOf.set(m[1].toLowerCase(), name);
 }
 
