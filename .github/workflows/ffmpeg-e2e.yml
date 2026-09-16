@@ -1,0 +1,78 @@
+name: FFmpeg end to end
+
+# The tests that prove the port rather than the shape of the code.
+#
+# cargo test --lib checks that the arguments look right. These three check that
+# the pinned macOS build actually downloads, matches its checksum, unpacks,
+# survives chmod and runs - and that real segments off Kick go through it and
+# come back as a readable MP4. They are #[ignore]d because they need the
+# network and a real FFmpeg, so CI never runs them; this is where they run.
+#
+# Manual, because it pulls 57 MB from someone else's server and some
+# megabytes more from Kick's CDN.
+
+on:
+  workflow_dispatch:
+    inputs:
+      playlist:
+        description: Media playlist URL for the assemble test (empty skips it)
+        default: ""
+
+jobs:
+  e2e:
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # The whole install path: fetch, checksum, unpack, set the executable bit,
+      # then run the binaries. The one test that would catch a build shipped
+      # without a code signature, or an unpack that forgot chmod - both of which
+      # look like a successful install right up until the mux step.
+      - name: Install the pinned build
+        working-directory: src-tauri
+        run: cargo test --lib -- --ignored --nocapture installs_the_pinned_build
+
+      # The next two need an FFmpeg on disk. It comes from the very URLs the app
+      # ships, read out of the source rather than copied here, so this step
+      # cannot drift from what a user would get.
+      - name: Fetch the same FFmpeg for the remaining tests
+        run: |
+          mkdir -p ffbin
+          cd ffbin
+          for url in $(grep -o 'https://ffmpeg.martin-riedl.de[^"]*' ../src-tauri/src/ffmpeg.rs); do
+            curl -fsSLO "$url"
+          done
+          unzip -oq "*.zip"
+          chmod +x ffmpeg ffprobe
+          rm -f ./*.zip
+          ./ffmpeg -version | head -1
+
+      # Proves the resolution order on a platform whose PATH separator is not
+      # the one this was written against.
+      - name: An FFmpeg already on the machine is used
+        working-directory: src-tauri
+        env:
+          KICKCUT_TEST_FFMPEG_DIR: ${{ github.workspace }}/ffbin
+        run: cargo test --lib -- --ignored --nocapture an_ffmpeg_already_on_path
+
+      # The whole pipeline against real segments: downloaded, joined, muxed by
+      # the real FFmpeg, then read back with ffprobe. A media playlist URL
+      # expires, so it is passed in rather than pinned.
+      - name: Real segments through the real FFmpeg
+        if: inputs.playlist != ""
+        working-directory: src-tauri
+        env:
+          KICKCUT_TEST_FFMPEG_DIR: ${{ github.workspace }}/ffbin
+          KICKCUT_TEST_PLAYLIST: ${{ inputs.playlist }}
+        run: cargo test --lib -- --ignored --nocapture assembles_real_segments

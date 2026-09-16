@@ -447,8 +447,8 @@ mod tests {
 
     fn args_of(mode: MuxMode, trim: f64) -> Vec<String> {
         build_args(&MuxRequest {
-            source: PathBuf::from("C:/parts/x/joined.ts"),
-            output: PathBuf::from("C:/out/clip.mp4"),
+            source: PathBuf::from("/parts/x/joined.ts"),
+            output: PathBuf::from("/out/clip.mp4"),
             mode,
             trim_offset: trim,
             output_seconds: 12600.0,
