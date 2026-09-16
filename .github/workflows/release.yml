@@ -64,6 +64,33 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "$(basename "$dmg")  $sha"
 
+      # Nobody working on this has a Mac, so a manual run is the only chance to
+      # look at the thing rather than infer it from a green tick. The runner is
+      # a real machine with a login session, and Screen Recording is already
+      # granted to the shell, so the app can be launched and photographed.
+      #
+      # It is only the launch screen: driving the UI further would need
+      # Accessibility permission, which is not granted here. That is still
+      # enough to see the window open at the right size, the dark theme land,
+      # and the Library screen reach Kick.
+      - name: Photograph it running
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        run: |
+          app=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$app" ]; then echo "No .app was produced."; exit 1; fi
+          open "$app"
+          # Long enough for the webview to paint and for the Library screen to
+          # get an answer back from Kick.
+          sleep 25
+          screencapture -x launch.png
+          echo "captured $(du -h launch.png | cut -f1)"
+
+      - name: Keep the photograph
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-screen
+          path: launch.png
       - name: Upload to the release
         if: startsWith(github.ref, 'refs/tags/')
         env:
