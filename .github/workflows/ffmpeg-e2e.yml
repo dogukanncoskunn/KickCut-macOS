@@ -50,7 +50,12 @@ jobs:
         run: |
           mkdir -p ffbin
           cd ffbin
-          for url in $(grep -o 'https://ffmpeg.martin-riedl.de[^"]*' ../src-tauri/src/ffmpeg.rs); do
+          # Anchored on .zip: the module documents the host in prose as well, and
+          # a looser pattern hands curl the sentence that mentions it.
+          urls=$(grep -o 'https://ffmpeg.martin-riedl.de[^"]*[.]zip' ../src-tauri/src/ffmpeg.rs)
+          count=$(printf "%s" "$urls" | grep -c .)
+          if [ "$count" -ne 2 ]; then echo "Expected 2 pinned URLs, found $count:"; echo "$urls"; exit 1; fi
+          for url in $urls; do
             curl -fsSLO "$url"
           done
           unzip -oq "*.zip"
