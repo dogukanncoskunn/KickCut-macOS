@@ -70,7 +70,7 @@ jobs:
       # the real FFmpeg, then read back with ffprobe. A media playlist URL
       # expires, so it is passed in rather than pinned.
       - name: Real segments through the real FFmpeg
-        if: inputs.playlist != ""
+        if: inputs.playlist != ''
         working-directory: src-tauri
         env:
           KICKCUT_TEST_FFMPEG_DIR: ${{ github.workspace }}/ffbin
