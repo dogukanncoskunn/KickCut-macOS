@@ -1,0 +1,125 @@
+name: UI end to end
+
+# The release build, launched on a real Apple Silicon Mac and used the way a
+# person would: install FFmpeg from Settings, list a channel's broadcasts, cut
+# 30 seconds, wait for the MP4, reveal it in Finder.
+#
+# ffmpeg-e2e.yml proves the pieces; this proves the assembled app - the webview
+# reaching Kick, IPC, the queue, the mux and the Finder reveal together. The
+# driver is .github/e2e/drive.js, injected into this build only.
+#
+# Pass/fail is the MP4 itself, read back with ffprobe. The screenshots and the
+# walkthrough video are there to be looked at.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channels:
+        description: Channels to try, in order, until one lists a broadcast
+        default: "xqc,adinross,trainwreckstv"
+  push:
+    paths:
+      - ".github/workflows/ui-e2e.yml"
+      - ".github/e2e/**"
+
+jobs:
+  ui:
+    runs-on: macos-14
+    timeout-minutes: 40
+    env:
+      OUT_DIR: /tmp/kickcut-e2e
+      CHANNELS: ${{ inputs.channels || 'xqc,adinross,trainwreckstv' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-release-${{ runner.os }}-
+
+      - run: npm ci
+
+      # A classic script in <head> runs before the module that mounts React, so
+      # the driver's localStorage lands before the first render.
+      - name: Inject the driver
+        run: |
+          mkdir -p public
+          sed -e "s|__CHANNELS__|$CHANNELS|" -e "s|__OUT_DIR__|$OUT_DIR|" .github/e2e/drive.js > public/e2e-drive.js
+          sed -i '' 's|</head>|  <script src="/e2e-drive.js"></script>\n  </head>|' index.html
+          grep -n e2e-drive index.html
+
+      # Release profile, as shipped. No updater artefacts: those need the
+      # signing key, and updating is not what is under test.
+      - name: Build the app
+        run: npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Run it
+        run: |
+          mkdir -p "$OUT_DIR" shots
+          app=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
+          open "$app"
+
+          n=0
+          settled=0
+          # 5 s a frame, 30 minutes at most.
+          while [ $n -lt 360 ]; do
+            n=$((n + 1))
+            screencapture -x "shots/$(printf %04d $n).png"
+            if ! pgrep -f "KickCut.app/Contents/MacOS" > /dev/null; then
+              echo "The app is no longer running."; exit 1
+            fi
+            if ls "$OUT_DIR"/*.mp4 > /dev/null 2>&1 && ! pgrep -x ffmpeg > /dev/null; then
+              settled=$((settled + 1))
+              # A few more frames for the Downloads screen and the Finder reveal.
+              [ $settled -ge 4 ] && break
+            fi
+            sleep 5
+          done
+          ls -la "$OUT_DIR"
+
+      - name: Check the MP4
+        run: |
+          support="$HOME/Library/Application Support/com.unsatisfied0.kickcut"
+          ffprobe=$(find "$support" -name ffprobe -type f -perm -u+x | head -1)
+          if [ -z "$ffprobe" ]; then echo "No executable managed ffprobe under $support"; exit 1; fi
+          echo "managed FFmpeg: $(dirname "$ffprobe")"
+
+          mp4=$(ls "$OUT_DIR"/*.mp4 | head -1)
+          if [ -z "$mp4" ]; then echo "No MP4 was written."; exit 1; fi
+          "$ffprobe" -v error -show_entries format=duration:stream=codec_type,codec_name,avg_frame_rate -of default=nw=1 "$mp4" | tee probe.txt
+
+          duration=$(grep '^duration=' probe.txt | cut -d= -f2)
+          grep -q '^codec_type=video' probe.txt || { echo "No video stream."; exit 1; }
+          grep -q '^codec_name=aac' probe.txt || { echo "No AAC audio stream."; exit 1; }
+          # The start snaps to the keyframe at or after 00:00:00, so allow slack.
+          awk -v d="$duration" 'BEGIN { exit !(d > 25 && d < 35) }' || { echo "Duration $duration is not ~30 s."; exit 1; }
+          echo "OK: $(du -h "$mp4" | cut -f1), ${duration}s"
+
+      - name: Stitch the screenshots into a video
+        if: always()
+        continue-on-error: true
+        run: |
+          ffmpeg=$(find "$HOME/Library/Application Support/com.unsatisfied0.kickcut" -name ffmpeg -type f | head -1)
+          "$ffmpeg" -v error -framerate 2 -pattern_type glob -i 'shots/*.png' \
+            -vf "scale=1440:-2" -c:v libx264 -pix_fmt yuv420p walkthrough.mp4
+
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-e2e
+          path: |
+            shots/
+            walkthrough.mp4
+            probe.txt
