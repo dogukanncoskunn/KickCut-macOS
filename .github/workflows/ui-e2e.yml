@@ -77,6 +77,9 @@ jobs:
           iface=$(route -n get default | awk '/interface:/ { print $2 }')
           sudo tcpdump -n -l -i "$iface" udp port 53 > dns.txt 2> /dev/null &
           (
+            # Not -e: lsof exits 1 whenever the app holds no socket, which is most
+            # of the time.
+            set +e
             while true; do
               pids=$(pgrep -f 'KickCut.app/Contents/MacOS|com.apple.WebKit.Networking|/bin/ffmpeg|/bin/ffprobe' | paste -sd, -)
               [ -n "$pids" ] && lsof -nP -i -a -p "$pids" -F pcn 2> /dev/null
@@ -116,6 +119,7 @@ jobs:
       - name: What it talked to
         if: always()
         run: |
+          set -o pipefail
           node .github/e2e/network-report.mjs dns.txt conns.txt | tee network.md
           { echo "## Hosts the app connected to"; cat network.md; } >> "$GITHUB_STEP_SUMMARY"
 
