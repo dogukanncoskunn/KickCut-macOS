@@ -88,6 +88,10 @@ jobs:
             done
           ) > conns.txt &
           echo $! > "$RUNNER_TEMP/lsof.pid"
+          # lsof sees BSD sockets only. WebKit connects through Network.framework,
+          # which never appears there; nettop reads the kernel's flow table and
+          # names the process behind every flow, whatever API opened it.
+          sudo nettop -L 0 -n -x > flows.txt 2> /dev/null &
           sleep 2
 
           open "$app"
@@ -117,12 +121,13 @@ jobs:
           sleep 5
           kill "$(cat "$RUNNER_TEMP/lsof.pid")" || true
           sudo pkill tcpdump || true
+          sudo pkill nettop || true
 
       - name: What it talked to
         if: always()
         run: |
           set -o pipefail
-          node .github/e2e/network-report.mjs dns.txt conns.txt | tee network.md
+          node .github/e2e/network-report.mjs dns.txt conns.txt flows.txt | tee network.md
           { echo "## Hosts the app connected to"; cat network.md; } >> "$GITHUB_STEP_SUMMARY"
 
       # The claim under test: the app keeps FFmpeg, one small record per job and
@@ -201,3 +206,4 @@ jobs:
             footprint.md
             dns.txt
             conns.txt
+            flows.txt

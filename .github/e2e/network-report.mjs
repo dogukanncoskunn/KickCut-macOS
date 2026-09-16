@@ -13,7 +13,10 @@
  * that produced its address. A connection whose address no lookup explains, or
  * a name outside the list below, fails the run.
  *
- * Usage: node network-report.mjs dns.txt conns.txt
+ *   flows.txt - `nettop -L 0`, which also sees connections made through
+ *               Network.framework - WebKit's - that lsof cannot.
+ *
+ * Usage: node network-report.mjs dns.txt conns.txt flows.txt
  */
 import { readFileSync } from "node:fs";
 
@@ -25,7 +28,7 @@ const ALLOWED = [
   /^[a-z0-9-]+\.githubusercontent\.com$/,
 ];
 
-const [dnsFile, connsFile] = process.argv.slice(2);
+const [dnsFile, connsFile, flowsFile] = process.argv.slice(2);
 const pending = new Map(); // "id port" -> queried name
 const nameOf = new Map(); // address -> queried name
 
@@ -54,6 +57,28 @@ for (const line of readFileSync(connsFile, "utf8").split("\n")) {
   const addr = (
     remote.startsWith("[") ? remote.replace(/^\[(.*)\]:\d+$/, "$1") : remote.replace(/:\d+$/, "")
   ).toLowerCase();
+  if (!seen.has(addr)) seen.set(addr, new Set());
+  seen.get(addr).add(command);
+}
+
+// nettop: a process row "name.pid,..." followed by its flows
+// "tcp4 local<->remote,...". IPv4 ports follow a colon, IPv6 ports a dot.
+command = "?";
+for (const line of readFileSync(flowsFile, "utf8").split("\n")) {
+  const flow = line.match(/^(?:tcp|udp|quic)\S*\s+\S+<->([^,\s]+)/);
+  if (!flow) {
+    const proc = line.match(/^([^,]+)\.\d+,/);
+    if (proc) command = proc[1];
+    continue;
+  }
+  if (!OURS.test(command)) continue;
+  const remote = flow[1].replace(/%[^.:]+/, "");
+  const addr = (
+    /^\d+\.\d+\.\d+\.\d+[:.]\d+$/.test(remote)
+      ? remote.replace(/[:.]\d+$/, "")
+      : remote.replace(/\.\d+$/, "")
+  ).toLowerCase();
+  if (addr === "*" || addr.startsWith("0.0.0.0")) continue;
   if (!seen.has(addr)) seen.set(addr, new Set());
   seen.get(addr).add(command);
 }
