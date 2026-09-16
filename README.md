@@ -99,22 +99,48 @@ editing-safe mode when you need the exact frame.
 ## What it stores and what it sends
 
 Nothing leaves your machine except the requests needed to do the job. There is
-no analytics, no telemetry and no crash reporting — the app talks to exactly
-three hosts:
+no account, no analytics, no telemetry and no crash reporting. These are the
+only hosts the app contacts:
 
 | Host | Why |
 |---|---|
 | `kick.com` | broadcast list and VOD metadata |
+| `images.kick.com` | broadcast thumbnails |
 | `stream.kick.com` | the playlists and the video segments |
 | `ffmpeg.martin-riedl.de` | the one-time FFmpeg download |
+| `github.com` | one small check per launch for a newer version, and the update itself if you accept it |
 
-On disk it keeps its FFmpeg copy, a small JSON record per queued job, and the
-segments of downloads still in progress — all under
-`~/Library/Application Support/com.unsatisfied0.kickcut`, plus a WebView profile
-in `~/Library/WebKit/com.unsatisfied0.kickcut` holding your settings and Kick
-cookies. Dragging the app to the Trash leaves both behind, as it does for every
-macOS app; delete those two folders to remove the rest. Videos you have already
-saved are never touched, because they live in the folder you chose.
+That list is not a promise written from memory. Every change to the test
+workflow re-runs the real app on a Mac, records every connection the app and
+its web view make, and fails if one goes anywhere else.
+
+KickCut shows its screens through Apple's own web engine, the one Safari uses.
+When that engine starts, macOS itself refreshes Apple's fraud-protection and
+privacy lists (`safebrowsing.apple`, `wps.apple.com`). That is macOS's traffic,
+the same for every app built this way, and it carries nothing about what you do
+in KickCut.
+
+On disk, measured on the same run:
+
+| Where | What |
+|---|---|
+| `~/Library/Application Support/com.unsatisfied0.kickcut` | FFmpeg; one small record per download (title, channel, quality, folder, file name), kept until you remove it from the list; the segments of a download still in progress, deleted when it finishes |
+| `~/Library/WebKit/com.unsatisfied0.kickcut` | your settings — language, theme, output folder |
+| `~/Library/Caches/com.unsatisfied0.kickcut` | the web engine's cache of Kick's replies and thumbnails, a few megabytes |
+| `~/Library/Saved Application State/com.unsatisfied0.kickcut.savedState` | window position, kept by macOS |
+
+No cookies are stored. Dragging the app to the Trash leaves these behind, as it
+does for every macOS app; this removes them:
+
+```bash
+rm -rf ~/Library/Application\ Support/com.unsatisfied0.kickcut \
+       ~/Library/WebKit/com.unsatisfied0.kickcut \
+       ~/Library/Caches/com.unsatisfied0.kickcut \
+       ~/Library/Saved\ Application\ State/com.unsatisfied0.kickcut.savedState
+```
+
+Videos you have already saved are never touched, because they live in the
+folder you chose.
 
 ## Building it
 
