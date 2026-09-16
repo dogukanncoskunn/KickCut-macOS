@@ -80,9 +80,11 @@ jobs:
             # Not -e: lsof exits 1 whenever the app holds no socket, which is most
             # of the time.
             set +e
+            # Every process, as root with full command names: WebKit's networking
+            # process is sandboxed and hides its arguments from pgrep. The report
+            # keeps only the app's own processes.
             while true; do
-              pids=$(pgrep -f 'KickCut.app/Contents/MacOS|com.apple.WebKit.Networking|/bin/ffmpeg|/bin/ffprobe' | paste -sd, -)
-              [ -n "$pids" ] && sudo lsof -nP -i -a -p "$pids" -F pcn 2> /dev/null
+              sudo lsof +c 0 -nP -i -F pcn 2> /dev/null
             done
           ) > conns.txt &
           echo $! > "$RUNNER_TEMP/lsof.pid"

@@ -42,11 +42,14 @@ for (const line of readFileSync(dnsFile, "utf8").split("\n")) {
   for (const m of r[3].matchAll(/\b(?:A|AAAA) ([0-9a-f:.]+)/g)) nameOf.set(m[1].toLowerCase(), name);
 }
 
+// lsof covers every process; these are the ones that act for the app.
+const OURS = /^(kickcut|com\.apple\.WebKit\.Networking|ffmpeg|ffprobe)$/;
+
 const seen = new Map(); // remote address -> Set of process names
 let command = "?";
 for (const line of readFileSync(connsFile, "utf8").split("\n")) {
   if (line.startsWith("c")) command = line.slice(1);
-  if (!line.startsWith("n") || !line.includes("->")) continue;
+  if (!line.startsWith("n") || !line.includes("->") || !OURS.test(command)) continue;
   const remote = line.slice(line.indexOf("->") + 2);
   const addr = (
     remote.startsWith("[") ? remote.replace(/^\[(.*)\]:\d+$/, "$1") : remote.replace(/:\d+$/, "")
