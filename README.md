@@ -14,14 +14,20 @@ Requires macOS 12 Monterey or later on Apple Silicon. Intel Macs are not
 supported.
 
 Grab the latest `KickCut_x.y.z_aarch64.dmg` from
-[Releases](https://github.com/dogukanncoskunn/KickCut-mac/releases), open it
+[Releases](https://github.com/dogukanncoskunn/KickCut-macOS/releases), open it
 and drag KickCut into Applications.
 
 **macOS will refuse it the first time.** KickCut is not signed with an Apple
-Developer certificate, so a double-click gets "KickCut cannot be opened".
-Right-click the app in Applications, choose **Open**, then **Open** again in
-the dialog — that records your decision once and every later launch is normal.
-The same thing in one command:
+Developer certificate, so the first double-click is stopped with a warning that
+Apple cannot check it. You allow it once, and every later launch is normal:
+
+- **macOS 15 Sequoia and later:** close the warning, open **System Settings →
+  Privacy & Security**, scroll down to the line about KickCut and choose
+  **Open Anyway**, then confirm with your password.
+- **macOS 12 – 14:** right-click the app in Applications, choose **Open**, then
+  **Open** again in the dialog.
+
+Or, on any version, in one command:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/KickCut.app

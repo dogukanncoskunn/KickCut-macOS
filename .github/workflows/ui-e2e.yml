@@ -82,7 +82,7 @@ jobs:
             set +e
             while true; do
               pids=$(pgrep -f 'KickCut.app/Contents/MacOS|com.apple.WebKit.Networking|/bin/ffmpeg|/bin/ffprobe' | paste -sd, -)
-              [ -n "$pids" ] && lsof -nP -i -a -p "$pids" -F pcn 2> /dev/null
+              [ -n "$pids" ] && sudo lsof -nP -i -a -p "$pids" -F pcn 2> /dev/null
             done
           ) > conns.txt &
           echo $! > "$RUNNER_TEMP/lsof.pid"
