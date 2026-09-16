@@ -123,12 +123,9 @@
     await until("a completed job", () => document.body.textContent.includes("Completed "), 600_000);
     await hold();
 
-    say("revealing in Finder");
-    (await until("Show in folder", () => button("Show in folder"), 10_000)).click();
-    await hold();
-
     // The same screens in Turkish and the light theme. Both are read from
-    // localStorage on the first paint, so they take a reload.
+    // localStorage on the first paint, so they take a reload. The Finder
+    // reveal comes last, since its window covers the app from then on.
     say("switching to Turkish, light theme");
     sessionStorage.setItem(TOUR, "1");
     localStorage.setItem("kickcut.locale", "tr");
@@ -141,7 +138,9 @@
     const tab = (i) => document.querySelectorAll("nav button")[i].click();
 
     say("tour: Yayınlar");
-    const submit = await until("the channel form", () => button("Yayınları listele"), 30_000);
+    // Disabled until the field has text, so not found through button().
+    const submit = await until("the channel form", () =>
+      buttons().find((b) => b.textContent.trim().startsWith("Yayınları listele")), 30_000);
     type(submit.closest("form").querySelector("input"), sessionStorage.getItem(TOUR + ".channel") || CHANNELS[0]);
     await sleep(300);
     submit.click();
@@ -159,6 +158,11 @@
 
     say("tour: Ayarlar");
     tab(3);
+    await hold();
+
+    say("revealing in Finder");
+    tab(2);
+    (await until("Klasörde göster", () => button("Klasörde göster"), 10_000)).click();
     await hold();
     say("finished");
   }
