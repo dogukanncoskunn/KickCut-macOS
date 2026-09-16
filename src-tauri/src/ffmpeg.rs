@@ -23,18 +23,73 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
-/// Pinned build. Both URLs serve the identical archive; the second is the
-/// upstream author's GitHub mirror, used when the first is unreachable.
+/// One pinned archive, and where it comes from.
+///
+/// Windows serves ffmpeg and ffprobe inside a single build; macOS serves them
+/// separately, so this is a list rather than one set of constants.
+struct Pin {
+    /// What the download is saved as. Ours to choose - it only has to be
+    /// recognisable when an interrupted install leaves one behind.
+    archive: &'static str,
+    /// Identical bytes at every entry; the later ones are mirrors.
+    urls: &'static [&'static str],
+    sha256: &'static str,
+    bytes: u64,
+}
+
 const VERSION: &str = "9.0.1";
-const ARCHIVE: &str = "ffmpeg-9.0.1-essentials_build.zip";
-const URLS: [&str; 2] = [
-    "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip",
-    "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
+
+/// The second URL is the upstream author GitHub mirror, used when the first is
+/// unreachable. Checksum published at
+/// <https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256>,
+/// checked 2026-09-07.
+#[cfg(windows)]
+const PINS: &[Pin] = &[Pin {
+    archive: "ffmpeg-9.0.1-essentials_build.zip",
+    urls: &[
+        "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip",
+        "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
+    ],
+    sha256: "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9",
+    bytes: 111_253_802,
+}];
+
+/// Apple Silicon builds from <https://ffmpeg.martin-riedl.de>, which publishes a
+/// .sha256 beside every download and keeps each build at its own stable URL -
+/// the two things this pinning needs.
+///
+/// Checked 2026-09-16: both are native arm64, both carry an ad-hoc code
+/// signature - Apple Silicon refuses to run a Mach-O without one, so a build
+/// that lacked it would download, verify, and then be killed on sight - and
+/// both declare a minimum of macOS 12, which is where minimumSystemVersion in
+/// tauri.conf.json comes from.
+///
+/// There is no second URL: unlike the gyan.dev build this one has no mirror.
+#[cfg(target_os = "macos")]
+const PINS: &[Pin] = &[
+    Pin {
+        archive: "ffmpeg-9.0.1-macos-arm64.zip",
+        urls: &["https://ffmpeg.martin-riedl.de/download/macos/arm64/1787073674_9.0.1/ffmpeg.zip"],
+        sha256: "8287a1b2229e05eb41859f073e18e6c52c60a778f2f5e6881070fe51b79407fe",
+        bytes: 28_447_413,
+    },
+    Pin {
+        archive: "ffprobe-9.0.1-macos-arm64.zip",
+        urls: &["https://ffmpeg.martin-riedl.de/download/macos/arm64/1787073674_9.0.1/ffprobe.zip"],
+        sha256: "102a26b8940a053298d9929bfaae71e4b6ef65ba5f19a99a88c433108560741a",
+        bytes: 28_370_930,
+    },
 ];
-/// Published at <https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256>,
-/// checked 2026-09-07. Archive is 111_253_802 bytes.
-const SHA256: &str = "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9";
-const EXPECTED_BYTES: u64 = 111_253_802;
+
+/// A platform with no pin would compile and then fail at the one moment the
+/// user cannot do anything about it, so it fails here instead.
+#[cfg(not(any(windows, target_os = "macos")))]
+compile_error!("ffmpeg is pinned per platform, and this one has no pin yet.");
+
+/// Everything the installer will fetch, for the warning shown before it starts.
+fn download_bytes() -> u64 {
+    PINS.iter().map(|pin| pin.bytes).sum()
+}
 
 #[cfg(windows)]
 pub const EXE: &str = ".exe";
@@ -156,7 +211,7 @@ pub async fn resolve(dir: &Path) -> Result<(Status, Option<Tools>), String> {
                 source,
                 version: Some(version),
                 path: Some(ffmpeg.display().to_string()),
-                download_bytes: EXPECTED_BYTES,
+                download_bytes: download_bytes(),
                 download_version: VERSION,
             },
             Some(Tools { ffmpeg, ffprobe }),
@@ -168,7 +223,7 @@ pub async fn resolve(dir: &Path) -> Result<(Status, Option<Tools>), String> {
             source: Source::Missing,
             version: None,
             path: None,
-            download_bytes: EXPECTED_BYTES,
+            download_bytes: download_bytes(),
             download_version: VERSION,
         },
         None,
@@ -250,45 +305,61 @@ pub async fn fetch_and_unpack(
     dir: &Path,
     report: impl Fn(&'static str, u64, u64) + Send + Sync + 'static,
 ) -> Result<(), String> {
-    let archive = dir.join(ARCHIVE);
 
     /*
      * The archive is removed however this ends.
      *
      * It used only to be cleaned up on success and on a checksum mismatch, so
      * an install that failed - or that was still running when the app was
-     * closed - left up to 106 MB sitting in the app's folder with nothing on
+     * closed - left tens of megabytes sitting in the app's folder with nothing on
      * screen to say why. Found in the wild: a 12 MB stump from an interrupted
      * attempt, and Settings still just said "not installed".
      */
-    let outcome = fetch_and_unpack_inner(dir, &archive, report).await;
-    let _ = tokio::fs::remove_file(&archive).await;
+    let outcome = fetch_and_unpack_inner(dir, report).await;
+    clear_stale_archive(dir).await;
     outcome
 }
 
 async fn fetch_and_unpack_inner(
     dir: &Path,
-    archive: &Path,
     report: impl Fn(&'static str, u64, u64) + Send + Sync + 'static,
 ) -> Result<(), String> {
-    // Download and hash in one pass, then check before anything is unpacked.
-    let digest = download(archive, &report).await?;
-    report("verifying", 0, 0);
-    if digest != SHA256 {
-        return Err(format!(
-            "The downloaded ffmpeg does not match its published checksum, so it was discarded. \
-             Expected {SHA256}, got {digest}."
-        ));
+    // Progress counts the whole install rather than the archive in hand, so a
+    // platform that needs two of them does not run the bar to the end twice.
+    let total = download_bytes();
+    let mut fetched = 0;
+    let mut found = 0;
+
+    for pin in PINS {
+        let archive = dir.join(pin.archive);
+        // Download and hash in one pass, then check before anything is unpacked.
+        let digest = download(pin, &archive, fetched, total, &report).await?;
+        report("verifying", fetched, total);
+        let expected = pin.sha256;
+        if digest != expected {
+            return Err(format!(
+                "The downloaded ffmpeg does not match its published checksum, so it was \
+                 discarded. Expected {expected}, got {digest}."
+            ));
+        }
+
+        report("extracting", fetched, total);
+        let extract_to = dir.to_path_buf();
+        let archive_for_task = archive.clone();
+        // The zip crate is blocking and this unpacks a couple of hundred
+        // megabytes, so it runs off the async runtime rather than stalling
+        // every task on it.
+        found += tokio::task::spawn_blocking(move || extract(&archive_for_task, &extract_to))
+            .await
+            .map_err(|e| format!("Unpacking ffmpeg did not finish: {e}"))??;
+        fetched += pin.bytes;
     }
 
-    report("extracting", 0, 0);
-    let extract_to = dir.to_path_buf();
-    let archive_for_task = archive.to_path_buf();
-    // The zip crate is blocking and this unpacks a couple of hundred megabytes,
-    // so it runs off the async runtime rather than stalling every task on it.
-    tokio::task::spawn_blocking(move || extract(&archive_for_task, &extract_to))
-        .await
-        .map_err(|e| format!("Unpacking ffmpeg did not finish: {e}"))??;
+    // Checked across the whole set, because on macOS each archive carries only
+    // one of the two binaries.
+    if found != 2 {
+        return Err("The download did not contain ffmpeg and ffprobe.".into());
+    }
     Ok(())
 }
 
@@ -297,21 +368,25 @@ async fn fetch_and_unpack_inner(
 /// Only safe when nothing is downloading, so it is called where an install is
 /// about to start or is known not to be running.
 pub async fn clear_stale_archive(dir: &Path) -> u64 {
-    let archive = dir.join(ARCHIVE);
-    let Ok(meta) = tokio::fs::metadata(&archive).await else {
-        return 0;
-    };
-    let size = meta.len();
-    if tokio::fs::remove_file(&archive).await.is_ok() {
-        size
-    } else {
-        0
+    let mut freed = 0;
+    for pin in PINS {
+        let archive = dir.join(pin.archive);
+        let Ok(meta) = tokio::fs::metadata(&archive).await else {
+            continue;
+        };
+        if tokio::fs::remove_file(&archive).await.is_ok() {
+            freed += meta.len();
+        }
     }
+    freed
 }
 
 /// Stream the archive to `target`, returning its lowercase hex SHA-256.
 async fn download(
+    pin: &Pin,
     target: &Path,
+    base: u64,
+    grand_total: u64,
     report: &(impl Fn(&'static str, u64, u64) + Send + Sync),
 ) -> Result<String, String> {
     /*
@@ -329,7 +404,7 @@ async fn download(
         .map_err(|e| format!("HTTP client could not be created: {e}"))?;
     let mut last_error = String::new();
 
-    for url in URLS {
+    for url in pin.urls.iter().copied() {
         // Cleared per attempt, or a failure on the first mirror would condemn
         // a good download from the second.
         last_error.clear();
@@ -345,7 +420,6 @@ async fn download(
             }
         };
 
-        let total = response.content_length().unwrap_or(EXPECTED_BYTES);
         let mut file = tokio::fs::File::create(target)
             .await
             .map_err(|e| format!("Could not write to {}: {e}", target.display()))?;
@@ -375,7 +449,7 @@ async fn download(
             // second; every megabyte is smooth enough to watch.
             if since_emit >= 1_048_576 {
                 since_emit = 0;
-                report("downloading", received, total);
+                report("downloading", base + received, grand_total);
             }
         }
 
@@ -384,7 +458,7 @@ async fn download(
             .map_err(|e| format!("Could not finish writing ffmpeg: {e}"))?;
 
         if received > 0 && last_error.is_empty() {
-            report("downloading", received, total);
+            report("downloading", base + received, grand_total);
             return Ok(format!("{:x}", hasher.finalize()));
         }
     }
@@ -392,11 +466,12 @@ async fn download(
     Err(format!("ffmpeg could not be downloaded. {last_error}"))
 }
 
-/// Pull just the two binaries out of the archive.
+/// Pull whichever of the two binaries this archive holds, and say how many.
 ///
-/// The build also ships ffplay, documentation and presets; none of it is used
-/// here, and unpacking it would roughly double what sits on the user's disk.
-fn extract(archive: &Path, dir: &Path) -> Result<(), String> {
+/// The Windows build also ships ffplay, documentation and presets; none of it
+/// is used here, and unpacking it would roughly double what sits on the user's
+/// disk.
+fn extract(archive: &Path, dir: &Path) -> Result<usize, String> {
     let file = std::fs::File::open(archive)
         .map_err(|e| format!("The downloaded archive could not be opened: {e}"))?;
     let mut zip = zip::ZipArchive::new(file)
@@ -426,15 +501,22 @@ fn extract(archive: &Path, dir: &Path) -> Result<(), String> {
         entry
             .read_to_end(&mut buffer)
             .map_err(|e| format!("{name} could not be unpacked: {e}"))?;
-        std::fs::write(dir.join(&name), buffer)
+        let path = dir.join(&name);
+        std::fs::write(&path, buffer)
             .map_err(|e| format!("{name} could not be saved: {e}"))?;
+        // Unix keeps the executable bit outside the file, and a zip entry's mode
+        // does not survive a plain write - so without this the binary lands
+        // unable to run, and the install reports success either way.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("{name} could not be made executable: {e}"))?;
+        }
         found += 1;
     }
 
-    if found != wanted.len() {
-        return Err("The downloaded archive did not contain ffmpeg and ffprobe.".into());
-    }
-    Ok(())
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -445,12 +527,24 @@ mod tests {
     fn the_pinned_urls_point_at_the_pinned_version() {
         // A version bump that misses one of these would install a build whose
         // checksum cannot match, so tie them together here.
-        for url in URLS {
-            assert!(url.contains(VERSION), "{url} is not the pinned version");
-            assert!(url.ends_with(ARCHIVE), "{url} is not the pinned archive");
+        for pin in PINS {
+            for url in pin.urls {
+                assert!(url.contains(VERSION), "{url} is not the pinned version");
+            }
+            // The saved name carries the version too, so a stump left by an
+            // old install cannot be mistaken for the current download.
+            assert!(
+                pin.archive.contains(VERSION),
+                "{} is not the pinned version",
+                pin.archive
+            );
+            assert_eq!(pin.sha256.len(), 64);
+            assert!(pin
+                .sha256
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+            assert!(pin.bytes > 0, "{} has no expected size", pin.archive);
         }
-        assert_eq!(SHA256.len(), 64);
-        assert!(SHA256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
     }
 
     /// An install that never finished leaves an archive; it must not survive.
@@ -464,7 +558,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let archive = dir.join(ARCHIVE);
+        let archive = dir.join(PINS[0].archive);
         std::fs::write(&archive, vec![0u8; 12_934_883]).unwrap();
 
         let freed = clear_stale_archive(&dir).await;
@@ -520,7 +614,12 @@ mod tests {
 
         // The managed directory is empty, exactly as it is on a fresh install.
         let previous = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{};{previous}", on_path.display()));
+        // Built rather than formatted: the separator is ; on Windows and :
+        // everywhere else, and hardcoding one makes this test quietly find
+        // nothing on the other platform.
+        let mut search = vec![on_path.clone().into_os_string()];
+        search.extend(std::env::split_paths(&previous).map(|p| p.into_os_string()));
+        std::env::set_var("PATH", std::env::join_paths(&search).unwrap());
 
         let (status, tools) = resolve(&managed).await.expect("resolve");
         assert_eq!(status.source, Source::System, "should have used the machine's own copy");
@@ -539,14 +638,14 @@ mod tests {
 
     /// The real install, end to end.
     ///
-    /// `#[ignore]`d because it fetches 106 MB. Run it deliberately - with
+    /// `#[ignore]`d because it fetches the whole build. Run it deliberately - with
     /// `cargo test -- --ignored` - after changing the pinned version, the
     /// checksum, or anything in the unpacking path. It is the only thing that
     /// proves the three parts agree: that the URL still serves the archive the
     /// checksum describes, and that the archive still contains binaries that
     /// run on this machine.
     #[tokio::test]
-    #[ignore = "downloads 106 MB from gyan.dev"]
+    #[ignore = "downloads the pinned ffmpeg build"]
     async fn installs_the_pinned_build_and_the_binaries_run() {
         let dir = std::env::temp_dir().join("kickcut-ffmpeg-install-test");
         let _ = std::fs::remove_dir_all(&dir);

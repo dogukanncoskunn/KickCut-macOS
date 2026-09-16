@@ -14,6 +14,14 @@
 use serde::Serialize;
 use std::time::Duration;
 
+/// Claims the platform it is actually running on. stream.kick.com is not
+/// behind the rule that blocks us from the API, so this buys nothing - but a
+/// Windows string coming off a Mac is a lie told for no reason, and the sort
+/// that reads as evasion rather than politeness.
+#[cfg(target_os = "macos")]
+pub const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                  (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+#[cfg(not(target_os = "macos"))]
 pub const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                   (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 

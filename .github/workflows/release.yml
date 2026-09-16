@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  macos:
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v4
@@ -37,103 +37,89 @@ jobs:
       # paths out of the binary - see that file for why. It also typechecks
       # first, because tauri.conf.json runs `npm run build` before bundling, so
       # a release can never be cut from code that does not compile.
-      - name: Build the installer
+      - name: Build the app
         env:
           # Signs the updater artifact. Without these the build still produces
-          # an installer, but no .sig - and an installed copy refuses an update
-          # it cannot verify, which is the point of signing it.
+          # a .dmg, but no .sig - and an installed copy refuses an update it
+          # cannot verify, which is the point of signing it.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri:build
 
-      - name: Find the installer
-        id: installer
-        shell: pwsh
+      - name: Find what was built
+        id: built
         run: |
-          $exe = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *-setup.exe |
-            Select-Object -First 1
-          if (-not $exe) { throw "No NSIS installer was produced." }
+          bundle=src-tauri/target/release/bundle
+          dmg=$(find "$bundle/dmg" -maxdepth 1 -name "*.dmg" | head -1)
+          if [ -z "$dmg" ]; then echo "No .dmg was produced."; exit 1; fi
+
           # The app is unsigned, so a downloader has no way to tell a genuine
           # copy from one that was altered on its way to them - especially when
           # it arrives forwarded through chat rather than from the release page.
           # Publishing the hash gives them something to check against.
-          $sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
-          "path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
-          "name=$($exe.Name)" >> $env:GITHUB_OUTPUT
-          "sha256=$sha" >> $env:GITHUB_OUTPUT
-          "$($exe.Name)  $sha" | Write-Host
+          sha=$(shasum -a 256 "$dmg" | cut -d" " -f1)
+
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "$(basename "$dmg")  $sha"
 
       - name: Upload to the release
         if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          ASSET_NAME: ${{ steps.installer.outputs.name }}
-          ASSET_SHA: ${{ steps.installer.outputs.sha256 }}
-          ASSET_PATH: ${{ steps.installer.outputs.path }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          DMG: ${{ steps.built.outputs.dmg }}
+          NAME: ${{ steps.built.outputs.name }}
+          SHA: ${{ steps.built.outputs.sha256 }}
         run: |
-          $tag = "${{ github.ref_name }}"
           # Created here rather than by hand, so a tag push is the whole
           # release procedure and there is no step left to forget.
-          if (-not (gh release view $tag 2>$null)) {
-            gh release create $tag --title $tag --generate-notes
-          }
-          gh release upload $tag "${{ steps.installer.outputs.path }}" --clobber
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" "$DMG" --clobber
+
+          # The updater takes the .app.tar.gz rather than the .dmg: it replaces
+          # the bundle in place instead of mounting a disk image. Both are
+          # published, because they answer different questions - one is how you
+          # install it, the other is how an installed copy updates itself.
+          bundle=src-tauri/target/release/bundle
+          tarball=$(find "$bundle/macos" -maxdepth 1 -name "*.app.tar.gz" | head -1)
+          if [ -z "$tarball" ]; then echo "No updater bundle was produced."; exit 1; fi
+          if [ ! -f "$tarball.sig" ]; then echo "No .sig - is the signing key set?"; exit 1; fi
+          gh release upload "$TAG" "$tarball" "$tarball.sig" --clobber
 
           # latest.json is what an installed copy reads to learn a newer one
-          # exists. It carries the signature rather than the installer, so the
+          # exists. It carries the signature rather than the bundle, so the
           # check is a few hundred bytes and only a real update costs a
-          # download. Published to this release, and read through the
-          # /releases/latest/download/ path, so cutting a tag is still the whole
-          # procedure.
-          $sig = Get-Content "$($env:ASSET_PATH).sig" -Raw -ErrorAction SilentlyContinue
-          if (-not $sig) { throw "No .sig was produced - is the signing key set?" }
-          $manifest = [ordered]@{
-            version   = $tag.TrimStart("v")
-            notes     = "See the release notes for $tag."
-            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            platforms = [ordered]@{
-              "windows-x86_64" = [ordered]@{
-                signature = $sig.Trim()
-                url = "https://github.com/${{ github.repository }}/releases/download/$tag/$($env:ASSET_NAME)"
-              }
-            }
-          }
-          $manifest | ConvertTo-Json -Depth 5 | Set-Content latest.json -Encoding utf8
-          gh release upload $tag latest.json --clobber
+          # download. Published to this release and read through the
+          # /releases/latest/download/ path, so cutting a tag is still the
+          # whole procedure.
+          url="https://github.com/$REPO/releases/download/$TAG/$(basename "$tarball")"
+          jq -n \
+            --arg version "${TAG#v}" \
+            --arg tag "$TAG" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$(cat "$tarball.sig")" \
+            --arg url "$url" \
+            '{version: $version, notes: ("See the release notes for " + $tag + "."),
+              pub_date: $date,
+              platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > latest.json
+          gh release upload "$TAG" latest.json --clobber
 
           # Appended to whatever notes were generated, rather than replacing
-          # them, so the changelog survives.
-          $body = gh release view $tag --json body -q .body
-
-          # Built line by line rather than as a here-string: PowerShell wants a
-          # here-string's closing "@ at column zero, and a YAML block scalar
-          # ends at the first line that is not indented - so the two cannot
-          # coexist, and trying it silently invalidates this whole file.
-          # PowerShell repeats a *string*, not a char - [char] * [int] is not a
-          # defined operation - so the cast has to come first.
-          $fence = ([char]0x60).ToString() * 3
-          $lines = @(
-            ""
-            "## Verifying your download"
-            ""
-            "Windows will warn that the publisher is unknown - the app is not"
-            "code-signed. Choose **More info**, then **Run anyway**."
-            ""
-            "To confirm the file is the one published here and was not altered"
-            "on the way, compare its fingerprint:"
-            ""
-            ($fence + "powershell")
-            ("Get-FileHash " + $env:ASSET_NAME + " -Algorithm SHA256")
-            $fence
-            ""
-            $fence
-            $env:ASSET_SHA
-            $fence
-          )
-          if ($body -notmatch "Verifying your download") {
-            gh release edit $tag --notes ($body + ($lines -join "`n"))
-          }
+          # them, so the changelog survives. The prose lives in its own file so
+          # it can be read and edited as prose rather than as shell quoting.
+          body=$(gh release view "$TAG" --json body -q .body)
+          if [ "${body#*Opening it the first time}" = "$body" ]; then
+            {
+              printf "%s\n" "$body"
+              sed -e "s/@NAME@/$NAME/g" -e "s/@SHA@/$SHA/g" .github/release-notes.md
+            } > notes.md
+            gh release edit "$TAG" --notes-file notes.md
+          fi
 
       # On a manual run there is no tag to attach to, so the build is kept as
       # an artifact instead of being thrown away.
@@ -141,5 +127,5 @@ jobs:
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.installer.outputs.name }}
-          path: ${{ steps.installer.outputs.path }}
+          name: ${{ steps.built.outputs.name }}
+          path: ${{ steps.built.outputs.dmg }}

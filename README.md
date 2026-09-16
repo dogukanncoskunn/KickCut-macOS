@@ -1,26 +1,39 @@
-# KickCut
+# KickCut for macOS
 
 Download a Kick broadcast — all of it, or the three hours in the middle you
 actually want — as an MP4 that opens cleanly in an editor.
 
+This is the macOS build. It is the same app as
+[KickCut](https://github.com/dogukanncoskunn/KickCut), which is where the
+Windows build lives; the differences are the ones macOS forces — which FFmpeg
+is fetched, how a file is revealed in Finder, and how it is packaged.
+
 ## Install
 
-Grab the latest `KickCut_x.y.z_x64-setup.exe` from
-[Releases](https://github.com/dogukanncoskunn/KickCut/releases) and run it. It
-installs for the current user, so Windows will not ask for administrator
-rights.
+Requires macOS 12 Monterey or later on Apple Silicon. Intel Macs are not
+supported.
 
-**Windows will warn you.** KickCut is not code-signed, so SmartScreen shows
-"Windows protected your PC" and names the publisher as unknown. Choose **More
-info**, then **Run anyway**. Signing certificates are an annual cost and — since
-Microsoft stopped granting signed apps immediate SmartScreen reputation in 2024
-— would not remove that warning for a new project anyway.
+Grab the latest `KickCut_x.y.z_aarch64.dmg` from
+[Releases](https://github.com/dogukanncoskunn/KickCut-mac/releases), open it
+and drag KickCut into Applications.
 
-If you want to be sure the file is the one published here and was not altered
-on its way to you, every release lists the installer's SHA-256. Compare it:
+**macOS will refuse it the first time.** KickCut is not signed with an Apple
+Developer certificate, so a double-click gets "KickCut cannot be opened".
+Right-click the app in Applications, choose **Open**, then **Open** again in
+the dialog — that records your decision once and every later launch is normal.
+The same thing in one command:
 
-```powershell
-Get-FileHash KickCut_0.1.0_x64-setup.exe -Algorithm SHA256
+```bash
+xattr -dr com.apple.quarantine /Applications/KickCut.app
+```
+
+A certificate is an annual cost and paying it would remove a warning rather
+than change what the app does, so the hash is published instead. If you want
+to be sure the file is the one published here and was not altered on its way
+to you, every release lists the disk image’s SHA-256. Compare it:
+
+```bash
+shasum -a 256 KickCut_0.3.0_aarch64.dmg
 ```
 
 That proves the file matches what was built from this repository. It does not
@@ -28,10 +41,11 @@ make an unknown program safe — it answers "is this the real one", which is the
 question worth asking when an installer reaches you through chat rather than
 from the release page.
 
-On first launch, open **Settings** and install FFmpeg. It is a one-time 106 MB
-download, pinned to a specific build and checked against its published
-SHA-256; KickCut keeps it in its own folder and never touches your PATH. If
-FFmpeg is already on your machine, KickCut finds it and downloads nothing.
+On first launch, open **Settings** and install FFmpeg. It is a one-time 57 MB
+download — two archives, ffmpeg and ffprobe — each pinned to a specific build
+and checked against its published SHA-256; KickCut keeps them in its own
+folder and never touches your PATH. If FFmpeg is already on your machine,
+through Homebrew or anything else, KickCut finds it and downloads nothing.
 
 ## Using it
 
@@ -80,32 +94,33 @@ editing-safe mode when you need the exact frame.
 
 Nothing leaves your machine except the requests needed to do the job. There is
 no analytics, no telemetry and no crash reporting — the app talks to exactly
-four hosts:
+three hosts:
 
 | Host | Why |
 |---|---|
 | `kick.com` | broadcast list and VOD metadata |
 | `stream.kick.com` | the playlists and the video segments |
-| `gyan.dev` | the one-time FFmpeg download |
-| `github.com` | mirror for that download |
+| `ffmpeg.martin-riedl.de` | the one-time FFmpeg download |
 
 On disk it keeps its FFmpeg copy, a small JSON record per queued job, and the
-segments of downloads still in progress — all under its own folder in
-`%APPDATA%`, plus a WebView2 profile in `%LOCALAPPDATA%`. Uninstalling offers
-to remove all of it; videos you have already saved are never touched, because
-they live in the folder you chose.
+segments of downloads still in progress — all under
+`~/Library/Application Support/com.unsatisfied0.kickcut`, plus a WebView profile
+in `~/Library/WebKit/com.unsatisfied0.kickcut` holding your settings and Kick
+cookies. Dragging the app to the Trash leaves both behind, as it does for every
+macOS app; delete those two folders to remove the rest. Videos you have already
+saved are never touched, because they live in the folder you chose.
 
 ## Building it
 
 ```bash
 npm install
 npm run tauri:dev     # run it
-npm run tauri:build   # produce the installer
+npm run tauri:build   # produce the .dmg
 ```
 
 `tauri:build` goes through `scripts/build-release.mjs` rather than calling
 Tauri directly. Rust bakes absolute source paths into a release build, so
-without remapping them the shipped .exe tells everyone who downloads it what
+without remapping them the shipped binary tells everyone who downloads it what
 the build machine's user account is called.
 
 Checks, all of which CI runs on every push:

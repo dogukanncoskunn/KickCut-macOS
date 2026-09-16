@@ -17,10 +17,14 @@ export const LOCALE_NAMES: Record<Locale, string> = {
 const CATALOGS: Record<Locale, Messages> = { tr, en, de };
 
 /*
- * The locale also lives in the Rust settings file, but reading that is async
- * and the first paint cannot wait for it - a flash of the wrong language on
- * every launch is worse than a duplicated value. localStorage answers
- * synchronously; the Rust side is the durable copy and is written alongside.
+ * Kept in localStorage because the first paint cannot wait on anything async -
+ * a flash of the wrong language on every launch is worse than the alternative.
+ *
+ * That does mean it lives in the webview profile rather than with the job
+ * records, so it is per-machine and a reinstall that clears the profile loses
+ * it. The same is true of the theme and the output folder. Worth moving into
+ * the app data directory one day; not worth it for a language that is one
+ * click to set again.
  */
 const STORAGE_KEY = "kickcut.locale";
 

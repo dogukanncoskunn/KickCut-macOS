@@ -158,7 +158,7 @@ export const api = {
     invoke<void>("set_speed_limit", { bytesPerSecond }),
   /** Whether a job that came up short puts itself back in the queue. */
   setAutoResume: (enabled: boolean) => invoke<void>("set_auto_resume", { enabled }),
-  /** Show a file in Explorer, selected - or open a folder. */
+  /** Reveal a file in Finder, selected - or open a folder. */
   reveal: (path: string) => invoke<void>("reveal", { path }),
   ffmpegStatus: () => invoke<FfmpegStatus>("ffmpeg_status"),
   installFfmpeg: () => invoke<FfmpegStatus>("install_ffmpeg"),

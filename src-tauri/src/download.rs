@@ -1099,7 +1099,23 @@ pub fn reveal(path: String) -> Result<(), String> {
         cmd.spawn()
             .map_err(|e| format!("Explorer could not be opened: {e}"))?;
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // -R reveals the file selected inside its folder, which is what
+        // explorer.exe /select, does above. Without it Finder opens the folder
+        // and leaves the user to find the file themselves - and in a folder of
+        // a hundred recordings that is most of the work this button exists to
+        // save.
+        let mut cmd = std::process::Command::new("open");
+        if target.is_dir() {
+            cmd.arg(&target);
+        } else {
+            cmd.arg("-R").arg(&target);
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Finder could not be opened: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let dir = if target.is_dir() { target.clone() } else {
             target.parent().map(|p| p.to_path_buf()).unwrap_or(target.clone())
