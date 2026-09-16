@@ -1,0 +1,181 @@
+name: WKWebView probe
+
+# Answers the one question the macOS port depends on and that no amount of
+# Rust can work around: does Kick's Cloudflare rule let *this* webview through?
+#
+# kick.com/api is closed to the Rust HTTP client, so the app asks for its
+# metadata from the webview instead - the reasoning is in src/lib/kickApi.ts.
+# That trade only holds if the webview is welcome, and the webview is not the
+# same program on both platforms: Windows serves the page from WebView2
+# (Chromium) at http://tauri.localhost, macOS from WKWebView (Safari) at
+# tauri://localhost. Different TLS fingerprint, different origin.
+#
+# This reproduces Tauri's macOS setup exactly - custom scheme handler and all -
+# without building the app, and tries both ways of asking:
+#
+#   A  cross-origin fetch from a tauri://localhost page, which is what the app
+#      does today and what the port would inherit unchanged.
+#   B  same-origin fetch from a page loaded off https://kick.com itself, which
+#      is the fallback: a hidden window, no CORS involved.
+#
+# Exit 0 means A works and the port needs no change here. Exit 3 means only B
+# works and the fallback has to be built. Exit 1 means neither, and the whole
+# metadata path needs rethinking before anything else is worth doing.
+#
+# Manual only, and deliberately so: it talks to someone else's servers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: Kick channel to ask about
+        default: xqc
+
+jobs:
+  probe:
+    runs-on: macos-14
+
+    steps:
+      - name: Ask Kick from a WKWebView
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          cat > probe.swift <<'SWIFT'
+          import AppKit
+          import WebKit
+
+          let slug = ProcessInfo.processInfo.environment["SLUG"] ?? "xqc"
+          let api = "https://kick.com/api/v2/channels/\(slug)/videos"
+
+          // The body both probes run, written as a function body because
+          // callAsyncJavaScript awaits it - evaluateJavaScript would hand back
+          // the unresolved promise instead.
+          //
+          // The failure is reported rather than thrown, because a
+          // CORS refusal and a WAF block both surface as the same TypeError and
+          // the difference does not change what we do about it.
+          let script = """
+          const out = { origin: location.origin, ua: navigator.userAgent };
+          try {
+            const r = await fetch("\(api)", { headers: { Accept: "application/json" } });
+            out.status = r.status;
+            out.body = (await r.text()).slice(0, 160);
+          } catch (e) {
+            out.status = 0;
+            out.error = String(e);
+          }
+          return JSON.stringify(out);
+          """
+
+          func describe(_ label: String, _ raw: String) -> Bool {
+            print("--- \(label) ---")
+            guard let data = raw.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: data),
+                  let o = parsed as? [String: Any]
+            else { print("unreadable: \(raw)"); return false }
+            let status = (o["status"] as? Int) ?? 0
+            print("origin: \(o["origin"] as? String ?? "?")")
+            print("ua:     \(o["ua"] as? String ?? "?")")
+            print("status: \(status)")
+            if let e = o["error"] { print("error:  \(e)") }
+            if let b = o["body"] { print("body:   \(b)") }
+            return status == 200
+          }
+
+          // Serves the page over a custom scheme. This is the part that matters:
+          // it is what gives the document a tauri://localhost origin instead of
+          // an http one, exactly as Tauri does on macOS.
+          final class Scheme: NSObject, WKURLSchemeHandler {
+            func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+              let body = Data("<!doctype html><meta charset=\"utf-8\">".utf8)
+              let response = HTTPURLResponse(
+                url: task.request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+              task.didReceive(response)
+              task.didReceive(body)
+              task.didFinish()
+            }
+            func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
+          }
+
+          final class Driver: NSObject, WKNavigationDelegate {
+            var onLoad: ((WKWebView) -> Void)?
+            func webView(_ w: WKWebView, didFinish n: WKNavigation!) { onLoad?(w) }
+            func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
+              print("navigation failed: \(e.localizedDescription)")
+              exit(1)
+            }
+            func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
+              print("navigation failed: \(e.localizedDescription)")
+              exit(1)
+            }
+          }
+
+          let app = NSApplication.shared
+          app.setActivationPolicy(.accessory)
+
+          let config = WKWebViewConfiguration()
+          config.setURLSchemeHandler(Scheme(), forURLScheme: "tauri")
+          let web = WKWebView(frame: .init(x: 0, y: 0, width: 800, height: 600), configuration: config)
+          let driver = Driver()
+          web.navigationDelegate = driver
+
+          let window = NSWindow(
+            contentRect: web.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false)
+          window.contentView = web
+          window.orderFrontRegardless()
+
+          var crossOriginWorked = false
+
+          func run(_ label: String, then next: @escaping (Bool) -> Void) {
+            web.callAsyncJavaScript(script, in: nil, in: .page) { result in
+              switch result {
+              case .success(let value):
+                next(describe(label, value as? String ?? ""))
+              case .failure(let error):
+                print("--- \(label) ---")
+                print("eval failed: \(error.localizedDescription)")
+                next(false)
+              }
+            }
+          }
+
+          // Probe A, then B off the back of it.
+          driver.onLoad = { _ in
+            run("A  cross-origin from tauri://localhost") { ok in
+              crossOriginWorked = ok
+              driver.onLoad = { _ in
+                run("B  same-origin from https://kick.com") { fallbackWorked in
+                  print("")
+                  if crossOriginWorked {
+                    print("RESULT: the port needs no change - kickApi.ts works as it stands.")
+                    exit(0)
+                  } else if fallbackWorked {
+                    print("RESULT: cross-origin is refused, the hidden-window fallback works. Build plan B.")
+                    exit(3)
+                  } else {
+                    print("RESULT: neither way in. The metadata path needs rethinking.")
+                    exit(1)
+                  }
+                }
+              }
+              web.load(URLRequest(url: URL(string: "https://kick.com/")!))
+            }
+          }
+
+          web.load(URLRequest(url: URL(string: "tauri://localhost/index.html")!))
+
+          // A hung request must not hold a paid runner for six hours.
+          DispatchQueue.main.asyncAfter(deadline: .now() + 90) {
+            print("timed out waiting for Kick")
+            exit(2)
+          }
+
+          app.run()
+          SWIFT
+          swift probe.swift

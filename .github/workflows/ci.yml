@@ -12,10 +12,14 @@ concurrency:
 
 jobs:
   checks:
-    # Windows because that is what this app targets: the icon pipeline, the
-    # CREATE_NO_WINDOW process flags and the file-name rules are all
-    # Windows-specific, and testing them anywhere else proves nothing.
-    runs-on: windows-latest
+    # macOS because that is what this fork targets: the ffmpeg pins, the
+    # Finder reveal and the bundle are all macOS-specific, and testing them
+    # anywhere else proves nothing. Windows is verified upstream in KickCut,
+    # whose repository is public and whose CI is therefore free.
+    #
+    # Pinned to macos-14 rather than macos-latest so the architecture cannot
+    # change under us: this build is Apple Silicon only.
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v4
