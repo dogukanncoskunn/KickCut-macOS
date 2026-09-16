@@ -1,10 +1,15 @@
 
 ## Opening it the first time
 
-KickCut is not signed with an Apple Developer certificate, so macOS refuses it
-on the first double-click and says it cannot be opened. Right-click the app in
-Applications, choose **Open**, then **Open** again in the dialog. That records
-your decision once; every later launch is normal.
+KickCut is not signed with an Apple Developer certificate, so macOS stops the
+first double-click with a warning that Apple cannot check it. You allow it
+once; every later launch is normal.
+
+- **macOS 15 Sequoia and later:** close the warning, open **System Settings →
+  Privacy & Security**, scroll down to the line about KickCut and choose
+  **Open Anyway**, then confirm with your password.
+- **macOS 12 – 14:** right-click the app in Applications, choose **Open**, then
+  **Open** again in the dialog.
 
 The same thing in one command, if you prefer:
 

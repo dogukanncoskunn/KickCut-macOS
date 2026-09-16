@@ -39,7 +39,7 @@ to be sure the file is the one published here and was not altered on its way
 to you, every release lists the disk image’s SHA-256. Compare it:
 
 ```bash
-shasum -a 256 KickCut_0.3.0_aarch64.dmg
+shasum -a 256 KickCut_0.3.1_aarch64.dmg
 ```
 
 That proves the file matches what was built from this repository. It does not
@@ -110,9 +110,9 @@ only hosts the app contacts:
 | `ffmpeg.martin-riedl.de` | the one-time FFmpeg download |
 | `github.com` | one small check per launch for a newer version, and the update itself if you accept it |
 
-That list is not a promise written from memory. Every change to the test
-workflow re-runs the real app on a Mac, records every connection the app and
-its web view make, and fails if one goes anywhere else.
+That list is not a promise written from memory. Every release is re-run on a
+real Mac: a test drives the app through a download, records every connection
+the app and its web view make, and fails if one goes anywhere else.
 
 KickCut shows its screens through Apple's own web engine, the one Safari uses.
 When that engine starts, macOS itself refreshes Apple's fraud-protection and

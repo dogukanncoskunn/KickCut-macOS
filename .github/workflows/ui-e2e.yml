@@ -17,7 +17,12 @@ on:
       channels:
         description: Channels to try, in order, until one lists a broadcast
         default: "xqc,adinross,trainwreckstv"
+  # Every release tag, so the network and disk claims in the README are re-proven
+  # for each version shipped (path filters do not apply to tags), and any branch
+  # push that changes the test itself.
   push:
+    branches: ["**"]
+    tags: ["v*"]
     paths:
       - ".github/workflows/ui-e2e.yml"
       - ".github/e2e/**"
