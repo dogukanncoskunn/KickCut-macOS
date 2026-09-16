@@ -68,6 +68,23 @@ jobs:
         run: |
           mkdir -p "$OUT_DIR" shots
           app=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
+
+          # Everything the app writes is found later as "newer than this".
+          touch "$RUNNER_TEMP/marker"
+
+          # DNS on the default interface, and every connection held by the app,
+          # WebKit's networking process and FFmpeg. network-report.mjs joins them.
+          iface=$(route -n get default | awk '/interface:/ { print $2 }')
+          sudo tcpdump -n -l -i "$iface" udp port 53 > dns.txt 2> /dev/null &
+          (
+            while true; do
+              pids=$(pgrep -f 'KickCut.app/Contents/MacOS|com.apple.WebKit.Networking|/bin/ffmpeg|/bin/ffprobe' | paste -sd, -)
+              [ -n "$pids" ] && lsof -nP -i -a -p "$pids" -F pcn 2> /dev/null
+            done
+          ) > conns.txt &
+          echo $! > "$RUNNER_TEMP/lsof.pid"
+          sleep 2
+
           open "$app"
 
           n=0
@@ -88,6 +105,56 @@ jobs:
             sleep 2
           done
           ls -la "$OUT_DIR"
+
+          # Quit the way a person does, so anything written on quit is counted;
+          # fall back to a signal if AppleEvents are not permitted here.
+          perl -e 'alarm 20; exec @ARGV' osascript -e 'quit app "KickCut"' || pkill -TERM -f KickCut.app/Contents/MacOS || true
+          sleep 5
+          kill "$(cat "$RUNNER_TEMP/lsof.pid")" || true
+          sudo pkill tcpdump || true
+
+      - name: What it talked to
+        if: always()
+        run: |
+          node .github/e2e/network-report.mjs dns.txt conns.txt | tee network.md
+          { echo "## Hosts the app connected to"; cat network.md; } >> "$GITHUB_STEP_SUMMARY"
+
+      # The claim under test: the app keeps FFmpeg, one small record per job and
+      # its WebView settings, and nothing else - a finished download leaves no
+      # segments behind.
+      - name: What it left on disk
+        if: always()
+        run: |
+          {
+            echo "## Everything written by the app"
+            echo '```'
+            find "$HOME/Library" /private/var/folders -newer "$RUNNER_TEMP/marker" 2> /dev/null \
+              | grep -i -E 'kickcut|unsatisfied0' | sort
+            echo '```'
+            echo "### Sizes"
+            echo '```'
+            find "$HOME/Library" /private/var/folders -maxdepth 4 -newer "$RUNNER_TEMP/marker" -type d 2> /dev/null \
+              | grep -i -E '(kickcut|unsatisfied0)[^/]*$' | while read -r d; do du -sh "$d"; done
+            echo '```'
+            echo "### Job records"
+            echo '```json'
+            find "$HOME/Library/Application Support/com.unsatisfied0.kickcut" -name '*.json' -exec cat {} \; 2> /dev/null
+            echo
+            echo '```'
+            echo "### Cookies"
+            echo '```'
+            find "$HOME/Library" -newer "$RUNNER_TEMP/marker" -name '*.binarycookies' 2> /dev/null | while read -r c; do
+              echo "$c"; strings "$c" | grep -o -E '[a-z0-9.-]+\.[a-z]{2,}' | sort -u
+            done
+            echo '```'
+            echo "### Other files changed under ~/Library during the run (runner noise included)"
+            echo '```'
+            find "$HOME/Library" -newer "$RUNNER_TEMP/marker" -type f 2> /dev/null | grep -v -i -E 'kickcut|unsatisfied0' | head -40
+            echo '```'
+          } | tee footprint.md >> "$GITHUB_STEP_SUMMARY"
+
+          leftovers=$(find "$HOME/Library/Application Support/com.unsatisfied0.kickcut" \( -name '*.ts' -o -name '*.part' \) 2> /dev/null | wc -l)
+          if [ "$leftovers" -ne 0 ]; then echo "A finished job left $leftovers segment file(s) behind."; exit 1; fi
 
       - name: Check the MP4
         run: |
@@ -124,3 +191,7 @@ jobs:
             shots/
             walkthrough.mp4
             probe.txt
+            network.md
+            footprint.md
+            dns.txt
+            conns.txt

@@ -64,6 +64,25 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "$(basename "$dmg")  $sha"
 
+      # Two things a downloader cannot check and would never forgive: the binary
+      # naming the machine it was built on, and a bundle whose signature macOS
+      # considers broken - which Gatekeeper reports as "damaged" with no way
+      # past it except the terminal.
+      - name: Check what is being shipped
+        run: |
+          app=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
+          bin="$app/Contents/MacOS/$(defaults read "$PWD/$app/Contents/Info" CFBundleExecutable)"
+
+          leaks=$(strings -a "$bin" | grep -c -E "$HOME|/Users/[A-Za-z]" || true)
+          if [ "$leaks" -ne 0 ]; then
+            strings -a "$bin" | grep -E "$HOME|/Users/[A-Za-z]" | head -5
+            echo "The binary carries $leaks build-machine path(s)."; exit 1
+          fi
+          echo "No build-machine paths in $(basename "$bin")."
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E '^(Identifier|Format|Signature|TeamIdentifier)='
+
       # latest.json is what an installed copy reads to learn a newer one exists.
       # It carries the signature rather than the bundle, so the check is a few
       # hundred bytes and only a real update costs a download.
@@ -169,3 +188,61 @@ jobs:
         with:
           name: ${{ steps.built.outputs.name }}
           path: ${{ steps.built.outputs.dmg }}
+
+  # The release as a stranger meets it: no token, only public URLs. Proves the
+  # page is reachable, the disk image is the one whose hash the notes publish,
+  # and an installed copy would accept the update - its signature checked
+  # against the public key compiled into the app, not against anything the
+  # release itself supplies.
+  verify:
+    needs: macos
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download it anonymously
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          base="https://github.com/$REPO/releases/download/$TAG"
+          curl -fsSL -o latest.json "https://github.com/$REPO/releases/latest/download/latest.json"
+          jq . latest.json
+          [ "$(jq -r .version latest.json)" = "${TAG#v}" ] || { echo "latest.json does not point at $TAG"; exit 1; }
+
+          dmg="KickCut_${TAG#v}_aarch64.dmg"
+          curl -fsSL -o "$dmg" "$base/$dmg"
+          published=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/tags/$TAG" | jq -r .body | grep -o -E '\b[0-9a-f]{64}\b' | head -1)
+          actual=$(shasum -a 256 "$dmg" | cut -d" " -f1)
+          echo "published $published"; echo "actual    $actual"
+          [ -n "$published" ] && [ "$published" = "$actual" ] || { echo "The disk image does not match the published hash."; exit 1; }
+
+          url=$(jq -r '.platforms["darwin-aarch64"].url' latest.json)
+          curl -fsSL -o update.tar.gz "$url"
+          jq -r '.platforms["darwin-aarch64"].signature' latest.json | base64 -d > update.tar.gz.minisig
+          jq -r .plugins.updater.pubkey src-tauri/tauri.conf.json | base64 -d > updater.pub
+
+          brew install minisign > /dev/null
+          minisign -V -p updater.pub -m update.tar.gz -x update.tar.gz.minisig
+
+      # What Gatekeeper will say to someone who downloaded it with a browser,
+      # which marks the file as quarantined.
+      - name: Open it the way a downloaded copy is opened
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          dmg="KickCut_${TAG#v}_aarch64.dmg"
+          xattr -w com.apple.quarantine "0081;$(printf %x "$(date +%s)");Safari;" "$dmg"
+          hdiutil attach -nobrowse -quiet -mountpoint /Volumes/KickCut "$dmg"
+          ditto /Volumes/KickCut/KickCut.app "$RUNNER_TEMP/KickCut.app"
+          hdiutil detach -quiet /Volumes/KickCut
+
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/KickCut.app"
+          {
+            echo "## Gatekeeper on a quarantined copy"
+            echo '```'
+            spctl -a -vv -t exec "$RUNNER_TEMP/KickCut.app" 2>&1 || true
+            syspolicy_check distribution "$RUNNER_TEMP/KickCut.app" 2>&1 || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
