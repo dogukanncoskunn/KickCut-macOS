@@ -112,9 +112,9 @@ jobs:
             fi
             if ls "$OUT_DIR"/*.mp4 > /dev/null 2>&1 && ! pgrep -x ffmpeg > /dev/null; then
               settled=$((settled + 1))
-              # The driver keeps going after the MP4: 20 s on the queue, then the
-              # Downloads screen and the Finder reveal.
-              [ $settled -ge 25 ] && break
+              # The driver keeps going after the MP4: the queue, the Downloads
+              # screen, the Finder reveal, then a tour of every screen in Turkish.
+              [ $settled -ge 45 ] && break
             fi
             sleep 2
           done
