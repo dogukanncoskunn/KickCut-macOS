@@ -72,8 +72,8 @@ jobs:
 
           n=0
           settled=0
-          # 5 s a frame, 30 minutes at most.
-          while [ $n -lt 360 ]; do
+          # 2 s a frame, 30 minutes at most.
+          while [ $n -lt 900 ]; do
             n=$((n + 1))
             screencapture -x "shots/$(printf %04d $n).png"
             if ! pgrep -f "KickCut.app/Contents/MacOS" > /dev/null; then
@@ -81,10 +81,11 @@ jobs:
             fi
             if ls "$OUT_DIR"/*.mp4 > /dev/null 2>&1 && ! pgrep -x ffmpeg > /dev/null; then
               settled=$((settled + 1))
-              # A few more frames for the Downloads screen and the Finder reveal.
-              [ $settled -ge 4 ] && break
+              # The driver keeps going after the MP4: 20 s on the queue, then the
+              # Downloads screen and the Finder reveal.
+              [ $settled -ge 25 ] && break
             fi
-            sleep 5
+            sleep 2
           done
           ls -la "$OUT_DIR"
 
